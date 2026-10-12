@@ -8,22 +8,22 @@ usage() {
   cat <<'EOF'
 Usage: ./prepare-dspark-model-cache.sh [--official | --abliterated] [--yes]
 
-Downloads DeepSeek-V4-Flash-Vision-Exp weights into HF_CACHE on this node,
+Downloads DeepSeek-V4-Flash-0731 weights into HF_CACHE on this node,
 then onto the worker (default DSPARK_WORKER_HF_NFS=0). Set
 DSPARK_WORKER_HF_NFS=1 to skip the worker copy; start then exports this cache over NFS.
 
-  --official      Download deepseek-ai/DeepSeek-V4-Flash-Vision-Exp (sets ABLITERATED=0)
-  --abliterated   Gated runtime ablation: official weights + 18 KiB direction
-                  (sets ABLITERATED=1). Does not download the 157 GiB Keys checkpoint.
-                  Requires HF_TOKEN and agreement on the gated Hub repo.
+  --official      Download deepseek-ai/DeepSeek-V4-Flash-0731 (sets ABLITERATED=0).
+                  With ABLATE=1 also stages the gated terms + 18 KiB direction
+                  for the runtime projection.
+  --abliterated   Download the gated Keys checkpoint (the direction baked into
+                  the weights; sets ABLITERATED=1). Requires HF_TOKEN and
+                  agreement on the gated Hub repo.
   --yes           Non-interactive: use ABLITERATED from .env.dspark (or 0)
 
-Official downloads default to DSPARK_REVISION=86f746b3… (Vision-Exp pin). Override
-via DSPARK_REVISION in .env.dspark, or clear it to follow tip of main.
-Abliterated still serves official Vision-Exp. You must agree to the gated Keys
-terms (RESPONSIBLE_USE.md) at DSPARK_MODEL_ABLITERATED; prepare then downloads
-that terms file plus the 18 KiB refusal direction. The Hub id is gated
-(auto-approve after RESPONSIBLE_USE.md).
+Official downloads default to DSPARK_REVISION=9e165c30… (0731 pin), the Keys
+checkpoint to DSPARK_REVISION_ABLITERATED=a1e69379…. Override either in
+.env.dspark, or set it empty to follow the tip of main. The Keys Hub id is
+gated (auto-approve after RESPONSIBLE_USE.md).
 
 Hub auth is automatic when HF_TOKEN or HUGGING_FACE_HUB_TOKEN is exported in
 the calling shell (it wins over .env.dspark). Otherwise prepare uses the env
@@ -66,12 +66,13 @@ if [ -n "${THIS_NODE_HF_CACHE:-}" ]; then
   HF_CACHE="$THIS_NODE_HF_CACHE"
 fi
 
-DSPARK_MODEL_OFFICIAL="${DSPARK_MODEL_OFFICIAL:-deepseek-ai/DeepSeek-V4-Flash-Vision-Exp}"
-DSPARK_MODEL_ABLITERATED="${DSPARK_MODEL_ABLITERATED:-drowzeys/keys-DeepSeekV4Flash-Vision-EXP-ablit}"
+DSPARK_MODEL_OFFICIAL="${DSPARK_MODEL_OFFICIAL:-deepseek-ai/DeepSeek-V4-Flash-0731}"
+DSPARK_MODEL_ABLITERATED="${DSPARK_MODEL_ABLITERATED:-drowzeys/keys-DeepSeekV4-Flash-GA-0731-Dspark-Abliterated-Anchored-Tensors}"
 # Official tested pin. Override with DSPARK_REVISION=<sha> or clear with
 # DSPARK_REVISION= to follow tip of main. Abliterated uses DSPARK_REVISION_ABLITERATED
 # (default empty = tip of that repo).
-DEFAULT_OFFICIAL_REVISION="86f746b36186f0e567729a5c06a8c918caba82a9"
+DEFAULT_OFFICIAL_REVISION="9e165c30e2704aec5d9d593cce3eebd58bbef1cb"
+DEFAULT_ABLITERATED_REVISION="a1e69379517383be9cd78c67defb04e77ad6aa68"
 : "${HF_CACHE:=$HOME/.cache/huggingface}"
 : "${HF_DOWNLOAD_WORKERS:=1}"
 : "${DSPARK_VLLM_IMAGE:=vllm-dspark-runtime:dspark-nvfp4-stage-c}"
@@ -128,13 +129,20 @@ fi
 unset _HF_TOKEN_SRC
 
 resolve_revision() {
-  # Runtime ablation still serves official Vision-Exp. Keep the official pin.
-  if [ -n "${DSPARK_REVISION+x}" ]; then
-    :
-  else
+  if [ "${ABLITERATED:-0}" = "1" ]; then
+    DSPARK_REVISION="${DSPARK_REVISION_ABLITERATED-$DEFAULT_ABLITERATED_REVISION}"
+  elif [ -z "${DSPARK_REVISION+x}" ]; then
     DSPARK_REVISION="$DEFAULT_OFFICIAL_REVISION"
   fi
   export DSPARK_REVISION
+}
+
+checkpoint_for_choice() {
+  if [ "${1:-0}" = "1" ]; then
+    printf '%s' "$DSPARK_MODEL_ABLITERATED"
+  else
+    printf '%s' "$DSPARK_MODEL_OFFICIAL"
+  fi
 }
 
 need_cmd() {
@@ -159,7 +167,7 @@ upsert_env_kv() {
 resolve_checkpoint() {
   # Worker recurse: trust env already set by head (no prompt).
   if [ "${PREPARE_WORKER:-1}" = "0" ]; then
-    DSPARK_MODEL="$DSPARK_MODEL_OFFICIAL"
+    DSPARK_MODEL="$(checkpoint_for_choice "${ABLITERATED:-0}")"
     return 0
   fi
 
@@ -173,7 +181,7 @@ resolve_checkpoint() {
     echo "" >&2
     echo "Which DeepSeek-V4-Flash checkpoint should be prepared?" >&2
     echo "  [0] Official  — $DSPARK_MODEL_OFFICIAL" >&2
-    echo "  [1] Abliterated — official weights + gated 18 KiB direction" >&2
+    echo "  [1] Abliterated — $DSPARK_MODEL_ABLITERATED (direction baked in, gated)" >&2
     echo "      (agree at https://huggingface.co/$DSPARK_MODEL_ABLITERATED)" >&2
     echo "Current .env.dspark ABLITERATED=${ABLITERATED:-unset} (default answer: $default)" >&2
     while true; do
@@ -191,7 +199,7 @@ resolve_checkpoint() {
   fi
 
   ABLITERATED="$choice"
-  DSPARK_MODEL="$DSPARK_MODEL_OFFICIAL"
+  DSPARK_MODEL="$(checkpoint_for_choice "$ABLITERATED")"
   export ABLITERATED DSPARK_MODEL
 
   if [ -f "$ENV_FILE" ]; then
@@ -222,12 +230,15 @@ resolve_revision
 
 # Serve profiles keep HF_HUB_OFFLINE=1; download must ignore that for this run only.
 echo "prepare: forcing HF online for download (serve can keep HF_HUB_OFFLINE=1)" >&2
-if [ "${ABLITERATED:-0}" = "1" ]; then
-  echo "prepare: ABLITERATED=1 → official $DSPARK_MODEL @ ${DSPARK_REVISION:-tip} + gated 18 KiB direction" >&2
+if [ "${ABLATE:-0}" = "1" ] && [ "${ABLITERATED:-0}" = "1" ]; then
+  echo "prepare: ABLATE=1 with ABLITERATED=1 would apply the refusal direction twice; set one of them." >&2
+  exit 2
+elif [ "${ABLATE:-0}" = "1" ]; then
+  echo "prepare: ABLATE=1 → official $DSPARK_MODEL @ ${DSPARK_REVISION:-tip} + gated 18 KiB direction" >&2
 elif [ -n "${DSPARK_REVISION:-}" ]; then
-  echo "prepare: ABLITERATED=0 → $DSPARK_MODEL @ $DSPARK_REVISION" >&2
+  echo "prepare: ABLITERATED=${ABLITERATED:-0} → $DSPARK_MODEL @ $DSPARK_REVISION" >&2
 else
-  echo "prepare: ABLITERATED=0 → $DSPARK_MODEL @ (tip of default branch)" >&2
+  echo "prepare: ABLITERATED=${ABLITERATED:-0} → $DSPARK_MODEL @ (tip of default branch)" >&2
 fi
 
 run_download() {
@@ -334,7 +345,7 @@ run_gated_ablit_artifacts() {
   local direction_file="${DSPARK_ABLATE_DIRECTION_FILE:-ablit/refusal_direction_r1.pt}"
   local expected_sha="${DSPARK_ABLATE_DIRECTION_SHA256:-6e4d8a8f3aa9e21795faab2c5b14d29b019acdf2ddbfbd8238430458a5837fe0}"
   if [ -z "$HF_TOKEN" ]; then
-    echo "ABLITERATED=1 requires HF_TOKEN after you agree to the gated Hub terms." >&2
+    echo "ABLATE=1 requires HF_TOKEN after you agree to the gated Hub terms." >&2
     echo "  https://huggingface.co/${terms_repo}" >&2
     exit 1
   fi
@@ -449,7 +460,7 @@ PY
 
 run_download "$DSPARK_MODEL" "${DSPARK_REVISION:-}"
 verify_cache "$DSPARK_MODEL" "${DSPARK_REVISION:-}"
-if [ "${ABLITERATED:-0}" = "1" ]; then
+if [ "${ABLATE:-0}" = "1" ]; then
   run_gated_ablit_artifacts
 fi
 
@@ -468,7 +479,7 @@ if [ "${PREPARE_WORKER:-1}" = "1" ]; then
     verify_worker_image
     scp "$SCRIPT_DIR/prepare-dspark-model-cache.sh" "${WORKER_HOST}:${WORKER_DIR}/prepare-dspark-model-cache.sh"
     scp "$ENV_FILE" "${WORKER_HOST}:${WORKER_DIR}/.env.dspark"
-    ssh "$WORKER_HOST" "cd '$WORKER_DIR' && chmod +x ./prepare-dspark-model-cache.sh && env -u MASTER_ADDR -u MASTER_PORT -u NODE_RANK -u HEADLESS ENV_FILE='.env.dspark' THIS_NODE_HF_CACHE='$WORKER_HF_CACHE' PREPARE_WORKER=0 ABLITERATED='$ABLITERATED' DSPARK_REVISION='${DSPARK_REVISION:-}' DSPARK_REVISION_ABLITERATED='${DSPARK_REVISION_ABLITERATED:-}' ${WORKER_HF_TOKEN_ENV} ./prepare-dspark-model-cache.sh --yes"
+    ssh "$WORKER_HOST" "cd '$WORKER_DIR' && chmod +x ./prepare-dspark-model-cache.sh && env -u MASTER_ADDR -u MASTER_PORT -u NODE_RANK -u HEADLESS ENV_FILE='.env.dspark' THIS_NODE_HF_CACHE='$WORKER_HF_CACHE' PREPARE_WORKER=0 ABLITERATED='$ABLITERATED' ABLATE='${ABLATE:-0}' DSPARK_REVISION='${DSPARK_REVISION:-}' DSPARK_REVISION_ABLITERATED='${DSPARK_REVISION_ABLITERATED:-}' ${WORKER_HF_TOKEN_ENV} ./prepare-dspark-model-cache.sh --yes"
     if [ -n "${WORKER2_HOST:-}" ]; then
       WORKER2_DIR="${WORKER2_SCRIPT_DIR:-${WORKER2_DIR:-$WORKER_DIR}}"
       WORKER2_HF_CACHE="${WORKER2_HF_CACHE:-$WORKER_HF_CACHE}"
@@ -480,7 +491,7 @@ if [ "${PREPARE_WORKER:-1}" = "1" ]; then
       ssh -o BatchMode=yes -o ConnectTimeout=10 "$WORKER2_HOST" "mkdir -p '$WORKER2_DIR' '$WORKER2_HF_CACHE'"
       scp "$SCRIPT_DIR/prepare-dspark-model-cache.sh" "${WORKER2_HOST}:${WORKER2_DIR}/prepare-dspark-model-cache.sh"
       scp "$ENV_FILE" "${WORKER2_HOST}:${WORKER2_DIR}/.env.dspark"
-      ssh "$WORKER2_HOST" "cd '$WORKER2_DIR' && chmod +x ./prepare-dspark-model-cache.sh && env -u MASTER_ADDR -u MASTER_PORT -u NODE_RANK -u HEADLESS ENV_FILE='.env.dspark' THIS_NODE_HF_CACHE='$WORKER2_HF_CACHE' PREPARE_WORKER=0 ABLITERATED='$ABLITERATED' DSPARK_REVISION='${DSPARK_REVISION:-}' DSPARK_REVISION_ABLITERATED='${DSPARK_REVISION_ABLITERATED:-}' ${WORKER_HF_TOKEN_ENV} ./prepare-dspark-model-cache.sh --yes"
+      ssh "$WORKER2_HOST" "cd '$WORKER2_DIR' && chmod +x ./prepare-dspark-model-cache.sh && env -u MASTER_ADDR -u MASTER_PORT -u NODE_RANK -u HEADLESS ENV_FILE='.env.dspark' THIS_NODE_HF_CACHE='$WORKER2_HF_CACHE' PREPARE_WORKER=0 ABLITERATED='$ABLITERATED' ABLATE='${ABLATE:-0}' DSPARK_REVISION='${DSPARK_REVISION:-}' DSPARK_REVISION_ABLITERATED='${DSPARK_REVISION_ABLITERATED:-}' ${WORKER_HF_TOKEN_ENV} ./prepare-dspark-model-cache.sh --yes"
     fi
   fi
 fi

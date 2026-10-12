@@ -150,9 +150,12 @@ class RuntimeAblationWiringTests(unittest.TestCase):
             self.start,
         )
 
-    def test_abliterated_implies_runtime_ablation_and_requires_gate(self):
-        self.assertIn('if [ "${ABLITERATED:-0}" = "1" ]; then', self.start)
-        self.assertIn("ABLATE=1 is gated on ABLITERATED=1", self.start)
+    def test_ablate_is_runtime_only_and_requires_gate(self):
+        # 0731 lane: ABLITERATED picks the weights (1 = direction baked in),
+        # ABLATE=1 is the runtime projection on the official weights; never both.
+        self.assertIn('if [ "$ABLATE" = "1" ] && [ "${ABLITERATED:-0}" = "1" ]; then', self.start)
+        self.assertIn("would apply the refusal direction twice", self.start)
+        self.assertIn('DSPARK_MODEL="$DSPARK_MODEL_ABLITERATED"', self.start)
         self.assertIn("requires a gated Hugging Face download", self.start)
         self.assertIn("RESPONSIBLE_USE.md", self.start)
 
@@ -166,7 +169,7 @@ class RuntimeAblationWiringTests(unittest.TestCase):
     def test_one_shot_shell_override_wins_over_env_file(self):
         source_pos = self.start.index('source "$_dspark_env_clean"')
         restore_pos = self.start.index('ABLATE="$_dspark_ambient_ablate"')
-        resolve_pos = self.start.index('if [ "${ABLITERATED:-0}" = "1" ]; then')
+        resolve_pos = self.start.index('if [ "$ABLATE" = "1" ] && [ "${ABLITERATED:-0}" = "1" ]; then')
         self.assertLess(source_pos, restore_pos)
         self.assertLess(restore_pos, resolve_pos)
         self.assertIn("DSV4_ABLATE_LAMBDA=", self.start)
@@ -174,7 +177,8 @@ class RuntimeAblationWiringTests(unittest.TestCase):
 
     def test_example_documents_off_default(self):
         self.assertIn("ABLITERATED=0", self.env)
-        self.assertIn("You must agree to the gated", self.env)
+        self.assertIn("Gated (auto-approve after RESPONSIBLE_USE.md)", self.env)
+        self.assertIn("ABLATE=1 with ABLITERATED=0 (never both)", self.env)
         self.assertIn("DSV4_ABLATE_LAMBDA=3.5", self.env)
         self.assertIn("DSV4_ABLATE_LAYERS=10-42", self.env)
 
