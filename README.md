@@ -30,6 +30,14 @@ The old Qwen3-VL sidecar / MCP path is removed.
 > Vision-Exp still works: set `DSPARK_MODEL_OFFICIAL`, `DSPARK_REVISION`,
 > `SERVED_MODEL_NAME` and `MTP_NUM_TOKENS=6` back to upstream's values.
 > `scripts/ci-validate.sh` passes.
+>
+> Served on two Sparks since 2026-10-12 with `ABLITERATED=1`, `MAX_MODEL_LEN=614400`,
+> `MAX_NUM_SEQS=4`, `GPU_MEMORY_UTILIZATION_TEXT=0.87`, image `0.1.1@sha256:a8394849…`:
+> a KV pool of 1,958,570 tokens (3.19x of 614,400), 47 tok/s on one stream,
+> 103 tok/s total on four. **Drop the page cache on both boxes while the model
+> loads** (`echo 3 > /proc/sys/vm/drop_caches` every ~10 s until the start log
+> shows `GPU KV cache size`): on GB10 the page cache is GPU memory, and the first
+> start, which left it, stalled for 20+ min right after the KV allocation.
 
 The files added in [`7f1217f`](https://github.com/MiaAI-Lab/DeepSeek-v4-Flash-DSpark-2x-DGX-Spark/commit/7f1217f236ac96ec034c1645acc08a643492b09d), including the files under `recipe/overlay/`, came from **Tony D** ([tonyd2wild](https://github.com/tonyd2wild/DeepSeek-v4-Flash-DSpark-1M-NVFP4-KV-2x-DGX-Spark)). He is the author of that work.
 
