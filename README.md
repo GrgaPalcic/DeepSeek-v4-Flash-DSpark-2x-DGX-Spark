@@ -14,6 +14,23 @@ from the Vision-Exp checkpoint, OpenAI `image_url` / `<image>path</image>`).
 There is **no video encoder** in the official weights; GIF is a still frame.
 The old Qwen3-VL sidecar / MCP path is removed.
 
+> **This fork, branch `0731-ablit`: the text-only 0731 lane, brought up to date.**
+> Upstream `main` serves Vision-Exp; its `0731-ablit` branch stopped at
+> `0107cef` (2026-08-29). This branch is upstream `main` (`a8b4636`) plus the
+> changes that make 0731 a first-class checkpoint again:
+>
+> | | |
+> |---|---|
+> | Default checkpoint | [`deepseek-ai/DeepSeek-V4-Flash-0731`](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731) @ `9e165c30`, served as `deepseek-v4-flash-0731` |
+> | `ABLITERATED=1` | the Keys checkpoint [`…-GA-0731-Dspark-Abliterated-Anchored-Tensors`](https://huggingface.co/drowzeys/keys-DeepSeekV4-Flash-GA-0731-Dspark-Abliterated-Anchored-Tensors) @ `a1e69379` (gated): the refusal direction baked into layers 10-35, λ 3.5; layers 36-42 and the DSpark draft heads byte-identical to stock. No runtime cost. 22 of its 48 shards are byte-identical to the official ones |
+> | `ABLATE=1` | upstream's runtime projection of the same direction (`direction_r1.pt`, SHA-256 `6e4d8a8f…`) on the official weights. Refused together with `ABLITERATED=1` |
+> | Vision hotfix | skips a checkpoint without `vision_n_layers` (0731's encoder has no image token, which the encoder patch rejected as drift); `--limit-mm-per-prompt` is passed only for vision checkpoints |
+> | Draft depth | the launcher reads `num_nextn_predict_layers` and `dspark_block_size` from the served checkpoint's `config.json` instead of assuming Vision-Exp's 3 stages; `MTP_NUM_TOKENS=5` for 0731 |
+>
+> Vision-Exp still works: set `DSPARK_MODEL_OFFICIAL`, `DSPARK_REVISION`,
+> `SERVED_MODEL_NAME` and `MTP_NUM_TOKENS=6` back to upstream's values.
+> `scripts/ci-validate.sh` passes.
+
 The files added in [`7f1217f`](https://github.com/MiaAI-Lab/DeepSeek-v4-Flash-DSpark-2x-DGX-Spark/commit/7f1217f236ac96ec034c1645acc08a643492b09d), including the files under `recipe/overlay/`, came from **Tony D** ([tonyd2wild](https://github.com/tonyd2wild/DeepSeek-v4-Flash-DSpark-1M-NVFP4-KV-2x-DGX-Spark)). He is the author of that work.
 
 **Default image:** [`ghcr.io/anemll/dspark-vllm-gx10:0.1.1`](https://github.com/Anemll/dspark-vllm-gx10)
