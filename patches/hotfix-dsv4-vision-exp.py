@@ -25,8 +25,13 @@ startup patch:
 Video is not wired: the official weights, ``encoding/``, and ``inference/``
 have no video encoder. GIF is decoded as a still RGB frame.
 
+On a text-only checkpoint (0731: no ``vision_n_layers`` in config.json) it
+changes nothing: 0731's encoder has no image token, which the encoder patch
+would otherwise reject as drift.
+
 Usage (inside the container, after the encoder copy):
   python3 hotfix-dsv4-vision-exp.py
+  python3 hotfix-dsv4-vision-exp.py --checkpoint-kind   # prints vision|text|unknown
 """
 from __future__ import annotations
 
@@ -228,7 +233,33 @@ def _write(path: Path, original: str, updated: str, status: str) -> None:
     print(f"vision-exp hotfix {path.name:40s}: {status}")
 
 
+def checkpoint_kind() -> str:
+    """vision / text from the served checkpoint's config.json; unknown if absent."""
+    import json
+    import os
+
+    model = os.environ.get("DSPARK_MODEL", "").strip()
+    if not model:
+        return "unknown"
+    hub = Path(os.environ.get("DSPARK_CHECKPOINT_HUB", "/cache/huggingface/hub"))
+    repo = hub / ("models--" + model.replace("/", "--"))
+    revision = os.environ.get("DSPARK_REVISION", "").strip()
+    if not revision and (repo / "refs" / "main").is_file():
+        revision = (repo / "refs" / "main").read_text().strip()
+    config = repo / "snapshots" / revision / "config.json"
+    if not revision or not config.is_file():
+        return "unknown"
+    layers = json.loads(config.read_text()).get("vision_n_layers") or 0
+    return "vision" if int(layers) > 0 else "text"
+
+
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "--checkpoint-kind":
+        print(checkpoint_kind())
+        return 0
+    if len(sys.argv) == 1 and checkpoint_kind() == "text":
+        print("vision-exp hotfix: skipped (text-only checkpoint)")
+        return 0
     if len(sys.argv) > 1 and sys.argv[1] == "--status":
         model = DEFAULT_MODEL.read_text() if DEFAULT_MODEL.is_file() else ""
         encoding = DEFAULT_ENCODING.read_text() if DEFAULT_ENCODING.is_file() else ""

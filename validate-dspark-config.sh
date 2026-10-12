@@ -24,25 +24,31 @@ set +a
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION_TEXT:-0.835}"
 export GPU_MEMORY_UTILIZATION
 
-DSPARK_MODEL_OFFICIAL="${DSPARK_MODEL_OFFICIAL:-deepseek-ai/DeepSeek-V4-Flash-Vision-Exp}"
-DSPARK_MODEL_ABLITERATED="${DSPARK_MODEL_ABLITERATED:-drowzeys/keys-DeepSeekV4Flash-Vision-EXP-ablit}"
-DEFAULT_OFFICIAL_REVISION="86f746b36186f0e567729a5c06a8c918caba82a9"
-DSPARK_MODEL="$DSPARK_MODEL_OFFICIAL"
-if [ -z "${DSPARK_REVISION+x}" ]; then
-  DSPARK_REVISION="$DEFAULT_OFFICIAL_REVISION"
-fi
+DSPARK_MODEL_OFFICIAL="${DSPARK_MODEL_OFFICIAL:-deepseek-ai/DeepSeek-V4-Flash-0731}"
+DSPARK_MODEL_ABLITERATED="${DSPARK_MODEL_ABLITERATED:-drowzeys/keys-DeepSeekV4-Flash-GA-0731-Dspark-Abliterated-Anchored-Tensors}"
+DEFAULT_OFFICIAL_REVISION="9e165c30e2704aec5d9d593cce3eebd58bbef1cb"
+DEFAULT_ABLITERATED_REVISION="a1e69379517383be9cd78c67defb04e77ad6aa68"
+case "${ABLITERATED:-0}" in
+  0)
+    DSPARK_MODEL="$DSPARK_MODEL_OFFICIAL"
+    if [ -z "${DSPARK_REVISION+x}" ]; then
+      DSPARK_REVISION="$DEFAULT_OFFICIAL_REVISION"
+    fi
+    ;;
+  1)
+    DSPARK_MODEL="$DSPARK_MODEL_ABLITERATED"
+    DSPARK_REVISION="${DSPARK_REVISION_ABLITERATED-$DEFAULT_ABLITERATED_REVISION}"
+    ;;
+  *) echo "ABLITERATED must be 0 or 1 (got: ${ABLITERATED})" >&2; exit 2 ;;
+esac
 export DSPARK_MODEL DSPARK_REVISION
 
 DSV4_ABLATE_LAMBDA="${DSV4_ABLATE_LAMBDA:-3.5}"
 DSV4_ABLATE_LAYERS="${DSV4_ABLATE_LAYERS:-10-42}"
-if [ "${ABLITERATED:-0}" = "1" ]; then
-  ABLATE=1
-elif [ "${ABLATE:-0}" = "1" ]; then
-  echo "ABLATE=1 is gated on ABLITERATED=1. Agree at https://huggingface.co/${DSPARK_MODEL_ABLITERATED}" >&2
-  echo "then run ./prepare-dspark-model-cache.sh --abliterated" >&2
+ABLATE="${ABLATE:-0}"
+if [ "$ABLATE" = "1" ] && [ "${ABLITERATED:-0}" = "1" ]; then
+  echo "ABLATE=1 (runtime projection) with ABLITERATED=1 (direction baked into the weights) would apply the refusal direction twice; set one of them." >&2
   exit 2
-else
-  ABLATE=0
 fi
 case "$ABLATE" in 0|1) ;; *) echo "ABLATE must be 0 or 1 (got: $ABLATE)" >&2; exit 2 ;; esac
 if [ "$ABLATE" = "1" ]; then
@@ -68,9 +74,9 @@ PY
   _ablate_cache="${HF_CACHE:-${HF_HOME:-$HOME/.cache/huggingface}}"
   if [ ! -f "${_ablate_cache}/dspark-ablation/RESPONSIBLE_USE.md" ] \
     || [ ! -f "${_ablate_cache}/dspark-ablation/direction_r1.pt" ]; then
-    echo "ABLITERATED=1 requires a gated Hub download (Keys terms + 18 KiB direction)." >&2
+    echo "ABLATE=1 requires a gated Hub download (Keys terms + 18 KiB direction)." >&2
     echo "Agree at https://huggingface.co/${DSPARK_MODEL_ABLITERATED}" >&2
-    echo "then run: ./prepare-dspark-model-cache.sh --abliterated" >&2
+    echo "then run: ABLATE=1 ./prepare-dspark-model-cache.sh --official" >&2
     exit 1
   fi
 fi
@@ -149,7 +155,7 @@ dspark_validate_numeric_knobs || exit $?
 echo "  max num seqs: ${MAX_NUM_SEQS:-6}"
 echo "  max batched tokens: ${MAX_NUM_BATCHED_TOKENS:-8192}"
 echo "  gpu memory utilization: ${GPU_MEMORY_UTILIZATION} (GPU_MEMORY_UTILIZATION_TEXT=${GPU_MEMORY_UTILIZATION_TEXT:-0.835})"
-echo "  spec tokens (MTP_NUM_TOKENS): ${MTP_NUM_TOKENS:-6} with draft_sample_method=${DRAFT_SAMPLE_METHOD} (Vision-Exp: >=5 and divisible by 3)"
+echo "  spec tokens (MTP_NUM_TOKENS): ${MTP_NUM_TOKENS:-6} with draft_sample_method=${DRAFT_SAMPLE_METHOD} (>= dspark_block_size, divisible by num_nextn_predict_layers)"
 echo "  cudagraph capture size: $(( ${MAX_NUM_SEQS:-6} * (${MTP_NUM_TOKENS:-6} + 1) )) (max_num_seqs * (mtp + 1))"
 echo "  breakable cudagraph: ${VLLM_USE_BREAKABLE_CUDAGRAPH:-0}"
 echo "  dspark slot clamp: ${DSPARK_SLOT_CLAMP:-1}"

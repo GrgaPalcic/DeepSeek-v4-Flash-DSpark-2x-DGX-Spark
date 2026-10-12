@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -692,7 +694,53 @@ class VisionExpComposeWiringTest(unittest.TestCase):
         )
         self.assertIn('LIMIT_MM_ARGS=(--limit-mm-per-prompt "$${LIMIT_MM_JSON}")', text)
         self.assertIn('"$${LIMIT_MM_ARGS[@]}"', text)
-        self.assertIn("${SERVED_MODEL_NAME:-deepseek-v4-flash-vision-exp}", text)
+        self.assertIn("${SERVED_MODEL_NAME:-deepseek-v4-flash-0731}", text)
+
+    def test_limit_mm_only_for_vision_checkpoints(self):
+        text = (ROOT / "docker-compose.dspark.yml").read_text()
+        self.assertIn(
+            "CHECKPOINT_KIND=$$(python3 /opt/hotfix-dsv4-vision-exp.py --checkpoint-kind) || exit 1;",
+            text,
+        )
+        self.assertIn('if [ "$${CHECKPOINT_KIND}" != "text" ]; then LIMIT_MM_RAW=', text)
+
+
+class CheckpointKindTest(unittest.TestCase):
+    """0731 (no vision tower) must skip the hotfix; Vision-Exp must not."""
+
+    def _run(self, config, *args, revision="r1"):
+        import subprocess
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as hub:
+            snap = Path(hub) / "models--org--model" / "snapshots" / revision
+            snap.mkdir(parents=True)
+            if config is not None:
+                (snap / "config.json").write_text(json.dumps(config))
+            env = dict(os.environ, DSPARK_CHECKPOINT_HUB=hub, DSPARK_MODEL="org/model",
+                       DSPARK_REVISION=revision)
+            return subprocess.run(
+                [sys.executable, str(ROOT / "patches" / "hotfix-dsv4-vision-exp.py"), *args],
+                env=env, capture_output=True, text=True,
+            )
+
+    def test_kind_text_for_0731_config(self):
+        out = self._run({"num_nextn_predict_layers": 1}, "--checkpoint-kind")
+        self.assertEqual(out.returncode, 0)
+        self.assertEqual(out.stdout.strip(), "text")
+
+    def test_kind_vision_for_vision_exp_config(self):
+        out = self._run({"vision_n_layers": 32}, "--checkpoint-kind")
+        self.assertEqual(out.stdout.strip(), "vision")
+
+    def test_kind_unknown_without_config(self):
+        out = self._run(None, "--checkpoint-kind")
+        self.assertEqual(out.stdout.strip(), "unknown")
+
+    def test_text_checkpoint_skips_without_touching_files(self):
+        out = self._run({"num_nextn_predict_layers": 1})
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("skipped (text-only checkpoint)", out.stdout)
 
     def test_worker_vision_exp_sync_does_not_nest(self):
         text = (ROOT / "start-deepseek-v4-flash-dspark.sh").read_text()

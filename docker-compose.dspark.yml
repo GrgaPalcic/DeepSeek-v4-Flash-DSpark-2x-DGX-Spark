@@ -123,7 +123,7 @@ services:
       HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-0}"
       TRANSFORMERS_OFFLINE: "${TRANSFORMERS_OFFLINE:-0}"
       HF_HUB_DISABLE_XET: "${HF_HUB_DISABLE_XET:-1}"
-      DSPARK_MODEL: "${DSPARK_MODEL:-deepseek-ai/DeepSeek-V4-Flash-Vision-Exp}"
+      DSPARK_MODEL: "${DSPARK_MODEL:-deepseek-ai/DeepSeek-V4-Flash-0731}"
       # Optional in-memory refusal-direction projection. The launcher stages
       # the tiny direction file into the existing HF cache on both nodes.
       ABLATE: "${ABLATE:-0}"
@@ -429,7 +429,7 @@ services:
         case "$${ABLATE:-0}" in 0) unset DSV4_ABLATE_FILE ;; 1) export DSV4_ABLATE_FILE=/cache/huggingface/dspark-ablation/direction_r1.pt ;; *) echo "error: ABLATE must be 0 or 1 (got: $${ABLATE})" >&2; exit 2 ;; esac;
         ENCODING_SOURCE="$${DSPARK_ENCODING_FILE:-}";
         if [ -z "$${ENCODING_SOURCE}" ]; then
-          MODEL_HUB_DIR=$$(printf '%s' "$${DSPARK_MODEL:-deepseek-ai/DeepSeek-V4-Flash-Vision-Exp}" | sed 's|/|--|g');
+          MODEL_HUB_DIR=$$(printf '%s' "$${DSPARK_MODEL:-deepseek-ai/DeepSeek-V4-Flash-0731}" | sed 's|/|--|g');
           if [ -n "$${DSPARK_REVISION:-}" ] && [ -f "/cache/huggingface/hub/models--$${MODEL_HUB_DIR}/snapshots/$${DSPARK_REVISION}/encoding/encoding_dsv4.py" ]; then
             ENCODING_SOURCE="/cache/huggingface/hub/models--$${MODEL_HUB_DIR}/snapshots/$${DSPARK_REVISION}/encoding/encoding_dsv4.py";
           fi;
@@ -486,10 +486,10 @@ services:
         esac;
         REVISION_ARGS="";
         if [ -n "$${DSPARK_REVISION:-}" ]; then REVISION_ARGS="--revision $${DSPARK_REVISION}"; fi;
-        LIMIT_MM_RAW='${LIMIT_MM_PER_PROMPT:-image=8}'; case "$${LIMIT_MM_RAW}" in image=*) _lim_n="$${LIMIT_MM_RAW#image=}"; case "$${_lim_n}" in ''|*[!0-9]*) echo "error: LIMIT_MM_PER_PROMPT image=N needs an integer (Anemll --limit-mm-per-prompt requires JSON)" >&2; exit 2 ;; esac; LIMIT_MM_JSON="{\"image\":$${_lim_n}}" ;; *) LIMIT_MM_JSON="$${LIMIT_MM_RAW}" ;; esac; LIMIT_MM_ARGS=(--limit-mm-per-prompt "$${LIMIT_MM_JSON}");
-        exec /usr/local/bin/vllm serve ${DSPARK_MODEL:-deepseek-ai/DeepSeek-V4-Flash-Vision-Exp}
+        LIMIT_MM_ARGS=(); CHECKPOINT_KIND=$$(python3 /opt/hotfix-dsv4-vision-exp.py --checkpoint-kind) || exit 1; if [ "$${CHECKPOINT_KIND}" != "text" ]; then LIMIT_MM_RAW='${LIMIT_MM_PER_PROMPT:-image=8}'; case "$${LIMIT_MM_RAW}" in image=*) _lim_n="$${LIMIT_MM_RAW#image=}"; case "$${_lim_n}" in ''|*[!0-9]*) echo "error: LIMIT_MM_PER_PROMPT image=N needs an integer (Anemll --limit-mm-per-prompt requires JSON)" >&2; exit 2 ;; esac; LIMIT_MM_JSON="{\"image\":$${_lim_n}}" ;; *) LIMIT_MM_JSON="$${LIMIT_MM_RAW}" ;; esac; LIMIT_MM_ARGS=(--limit-mm-per-prompt "$${LIMIT_MM_JSON}"); fi;
+        exec /usr/local/bin/vllm serve ${DSPARK_MODEL:-deepseek-ai/DeepSeek-V4-Flash-0731}
         $${REVISION_ARGS}
-        --served-model-name ${SERVED_MODEL_NAME:-deepseek-v4-flash-vision-exp}
+        --served-model-name ${SERVED_MODEL_NAME:-deepseek-v4-flash-0731}
         --host ${VLLM_HOST:-127.0.0.1}
         --port ${VLLM_PORT:-8888}
         --trust-remote-code

@@ -171,7 +171,9 @@ class Wiring(unittest.TestCase):
         self.assertIn('patches/hotfix-vllm-dspark-block-k.py"', start)
         # the launcher's own k rule is relaxed only when the unlock is on
         self.assertIn('if [ "${DSPARK_ENABLE_DSPARK_BLOCK_K:-0}" = "1" ]; then', start)
-        self.assertIn("MTP_NUM_TOKENS >= 5 and divisible by 3", start)
+        # otherwise k follows the served checkpoint's own config.json
+        self.assertIn('MTP_NUM_TOKENS must be >= ${_ckpt_block} and divisible by ${_ckpt_npred}', start)
+        self.assertIn('int(c.get("num_nextn_predict_layers") or 1), int(c.get("dspark_block_size") or 1)', start)
 
     def test_env_example_and_ci(self):
         env = ENV_EXAMPLE.read_text()

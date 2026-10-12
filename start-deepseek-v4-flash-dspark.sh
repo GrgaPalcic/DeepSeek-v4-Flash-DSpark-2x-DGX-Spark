@@ -172,21 +172,54 @@ if [ "${DSPARK_TP3:-0}" = "1" ]; then
   export MAX_NUM_SEQS
 fi
 
-# Checkpoint flag: official Vision-Exp vs gated runtime ablation.
-#   ABLITERATED=0 → official weights, stock decoder
-#   ABLITERATED=1 → official weights + runtime direction (not the 157 GiB
-#                   Keys checkpoint). Requires a prior gated Hub download.
-DSPARK_MODEL_OFFICIAL="${DSPARK_MODEL_OFFICIAL:-deepseek-ai/DeepSeek-V4-Flash-Vision-Exp}"
-DSPARK_MODEL_ABLITERATED="${DSPARK_MODEL_ABLITERATED:-drowzeys/keys-DeepSeekV4Flash-Vision-EXP-ablit}"
-DEFAULT_OFFICIAL_REVISION="86f746b36186f0e567729a5c06a8c918caba82a9"
-DSPARK_MODEL="$DSPARK_MODEL_OFFICIAL"
-if [ -z "${DSPARK_REVISION+x}" ]; then
-  DSPARK_REVISION="$DEFAULT_OFFICIAL_REVISION"
-fi
+# Checkpoint flag (0731 lane): which weights are served.
+#   ABLITERATED=0 → DSPARK_MODEL_OFFICIAL (stock 0731) @ DSPARK_REVISION
+#   ABLITERATED=1 → DSPARK_MODEL_ABLITERATED (Keys checkpoint: the refusal
+#                   direction baked into the weights) @ DSPARK_REVISION_ABLITERATED
+# Runtime projection of the same direction on the official weights is a
+# separate switch, ABLATE=1 (gated terms + 18 KiB direction staged by prepare).
+DSPARK_MODEL_OFFICIAL="${DSPARK_MODEL_OFFICIAL:-deepseek-ai/DeepSeek-V4-Flash-0731}"
+DSPARK_MODEL_ABLITERATED="${DSPARK_MODEL_ABLITERATED:-drowzeys/keys-DeepSeekV4-Flash-GA-0731-Dspark-Abliterated-Anchored-Tensors}"
+DEFAULT_OFFICIAL_REVISION="9e165c30e2704aec5d9d593cce3eebd58bbef1cb"
+DEFAULT_ABLITERATED_REVISION="a1e69379517383be9cd78c67defb04e77ad6aa68"
+case "${ABLITERATED:-0}" in
+  0)
+    DSPARK_MODEL="$DSPARK_MODEL_OFFICIAL"
+    if [ -z "${DSPARK_REVISION+x}" ]; then
+      DSPARK_REVISION="$DEFAULT_OFFICIAL_REVISION"
+    fi
+    ;;
+  1)
+    DSPARK_MODEL="$DSPARK_MODEL_ABLITERATED"
+    DSPARK_REVISION="${DSPARK_REVISION_ABLITERATED-$DEFAULT_ABLITERATED_REVISION}"
+    ;;
+  *) echo "ABLITERATED must be 0 or 1 (got: ${ABLITERATED})" >&2; exit 2 ;;
+esac
 export ABLITERATED DSPARK_MODEL DSPARK_MODEL_OFFICIAL DSPARK_MODEL_ABLITERATED DSPARK_REVISION
 
-# Runtime refusal-direction projection. User-facing switch is ABLITERATED=1;
-# that implies ABLATE=1 after the gated 18 KiB direction is on disk.
+# "<num_nextn_predict_layers> <dspark_block_size>" of the served checkpoint, read
+# from its config.json in this node's HF cache; empty when it isn't there.
+checkpoint_spec_shape() {
+  local cache="${HF_CACHE:-${HF_HOME:-$HOME/.cache/huggingface}}"
+  python3 - "$cache/hub/models--${DSPARK_MODEL//\//--}" "${DSPARK_REVISION:-}" <<'PY' 2>/dev/null || true
+import json
+import sys
+from pathlib import Path
+
+repo, rev = Path(sys.argv[1]), sys.argv[2]
+if not rev:
+    ref = repo / "refs" / "main"
+    rev = ref.read_text().strip() if ref.is_file() else ""
+cfg = repo / "snapshots" / rev / "config.json"
+if rev and cfg.is_file():
+    c = json.loads(cfg.read_text())
+    print(int(c.get("num_nextn_predict_layers") or 1), int(c.get("dspark_block_size") or 1))
+PY
+}
+
+# Runtime refusal-direction projection (ABLATE=1) on the official weights,
+# after the gated 18 KiB direction is on disk. ABLITERATED=1 already serves the
+# direction baked into the weights, so the two never combine.
 DSV4_ABLATE_LAMBDA="${DSV4_ABLATE_LAMBDA:-3.5}"
 DSV4_ABLATE_LAYERS="${DSV4_ABLATE_LAYERS:-10-42}"
 DSPARK_ABLATE_DIRECTION_SHA256="${DSPARK_ABLATE_DIRECTION_SHA256:-6e4d8a8f3aa9e21795faab2c5b14d29b019acdf2ddbfbd8238430458a5837fe0}"
@@ -194,15 +227,10 @@ _ablate_cache="${HF_CACHE:-${HF_HOME:-$HOME/.cache/huggingface}}"
 _ablate_gate_dir="${_ablate_cache}/dspark-ablation"
 _ablate_gate_terms="${_ablate_gate_dir}/RESPONSIBLE_USE.md"
 _ablate_gate_direction="${_ablate_gate_dir}/direction_r1.pt"
-if [ "${ABLITERATED:-0}" = "1" ]; then
-  ABLATE=1
-elif [ "${ABLATE:-0}" = "1" ]; then
-  echo "ABLATE=1 is gated on ABLITERATED=1. Agree to the Keys Hub terms at" >&2
-  echo "  https://huggingface.co/${DSPARK_MODEL_ABLITERATED}" >&2
-  echo "then run: ./prepare-dspark-model-cache.sh --abliterated" >&2
+ABLATE="${ABLATE:-0}"
+if [ "$ABLATE" = "1" ] && [ "${ABLITERATED:-0}" = "1" ]; then
+  echo "ABLATE=1 (runtime projection) with ABLITERATED=1 (direction baked into the weights) would apply the refusal direction twice; set one of them." >&2
   exit 2
-else
-  ABLATE=0
 fi
 DSPARK_ABLATE_SOURCE_FILE="${DSPARK_ABLATE_SOURCE_FILE:-$_ablate_gate_direction}"
 case "$ABLATE" in
@@ -237,9 +265,9 @@ PY
     DSPARK_ABLATE_SOURCE_FILE="$SCRIPT_DIR/$DSPARK_ABLATE_SOURCE_FILE"
   fi
   if [ ! -f "$_ablate_gate_terms" ] || [ ! -f "$DSPARK_ABLATE_SOURCE_FILE" ]; then
-    echo "ABLITERATED=1 requires a gated Hugging Face download (Keys terms + 18 KiB direction)." >&2
+    echo "ABLATE=1 requires a gated Hugging Face download (Keys terms + 18 KiB direction)." >&2
     echo "Agree at https://huggingface.co/${DSPARK_MODEL_ABLITERATED}" >&2
-    echo "then run: ./prepare-dspark-model-cache.sh --abliterated" >&2
+    echo "then run: ABLATE=1 ./prepare-dspark-model-cache.sh --official" >&2
     echo "Missing: $_ablate_gate_terms and/or $DSPARK_ABLATE_SOURCE_FILE" >&2
     exit 1
   fi
@@ -251,10 +279,10 @@ PY
 fi
 export ABLATE DSV4_ABLATE_LAMBDA DSV4_ABLATE_LAYERS DSPARK_ABLATE_SOURCE_FILE DSPARK_ABLATE_DIRECTION_SHA256
 
-# Vision-Exp: Anemll SpeculativeConfig requires
-# num_speculative_tokens % num_nextn_predict_layers == 0 when k > n_predict.
-# Checkpoint n_predict=3 and dspark_block_size=5 → k in {6,9,…}. Official and
-# Keys ablit share that layout (0731 was n_predict=1, which is why k=5 booted).
+# Anemll SpeculativeConfig requires num_speculative_tokens % num_nextn_predict_layers
+# == 0 when k > n_predict, and DSpark needs k >= dspark_block_size. Both are read
+# from the served checkpoint's config.json: 0731 has n_predict=1, block 5 (k=5);
+# Vision-Exp has n_predict=3, block 5 (k in {6,9,…}).
 _mtp_k="${MTP_NUM_TOKENS:-6}"
 case "$_mtp_k" in
   ''|*[!0-9]*)
@@ -269,9 +297,19 @@ if [ "${DSPARK_ENABLE_DSPARK_BLOCK_K:-0}" = "1" ]; then
     echo "error: MTP_NUM_TOKENS must be >= 1 with DSPARK_ENABLE_DSPARK_BLOCK_K=1; got ${_mtp_k}" >&2
     exit 2
   fi
-elif [ "$_mtp_k" -lt 5 ] || [ $((_mtp_k % 3)) -ne 0 ]; then
-  echo "error: Vision-Exp requires MTP_NUM_TOKENS >= 5 and divisible by 3 (num_nextn_predict_layers=3); got ${_mtp_k} (set DSPARK_ENABLE_DSPARK_BLOCK_K=1 to run k=dspark_block_size=5)" >&2
-  exit 2
+else
+  _ckpt_shape="$(checkpoint_spec_shape)"
+  if [ -z "$_ckpt_shape" ]; then
+    echo "warn: ${DSPARK_MODEL}@${DSPARK_REVISION:-main} config.json not in the local HF cache; MTP_NUM_TOKENS=${_mtp_k} is checked at engine start only" >&2
+  else
+    read -r _ckpt_npred _ckpt_block <<< "$_ckpt_shape"
+    if [ "$_mtp_k" -lt "$_ckpt_block" ] || { [ "$_mtp_k" -gt "$_ckpt_npred" ] && [ $((_mtp_k % _ckpt_npred)) -ne 0 ]; }; then
+      echo "error: ${DSPARK_MODEL} has num_nextn_predict_layers=${_ckpt_npred} and dspark_block_size=${_ckpt_block}: MTP_NUM_TOKENS must be >= ${_ckpt_block} and divisible by ${_ckpt_npred}; got ${_mtp_k} (DSPARK_ENABLE_DSPARK_BLOCK_K=1 lifts the divisibility rule)" >&2
+      exit 2
+    fi
+    unset _ckpt_npred _ckpt_block
+  fi
+  unset _ckpt_shape
 fi
 unset _mtp_k
 
@@ -1327,7 +1365,7 @@ print_resolved_profile() {
   fi
   echo "  max batched tokens: ${MAX_NUM_BATCHED_TOKENS:-8192}"
   echo "  gpu memory utilization: ${GPU_MEMORY_UTILIZATION:-0.835} (from GPU_MEMORY_UTILIZATION_TEXT=${GPU_MEMORY_UTILIZATION_TEXT:-0.835})"
-  echo "  mtp speculative tokens: ${MTP_NUM_TOKENS:-6} (Vision-Exp: >=5 and divisible by 3 unless DSPARK_ENABLE_DSPARK_BLOCK_K=1)"
+  echo "  mtp speculative tokens: ${MTP_NUM_TOKENS:-6} (>= the checkpoint's dspark_block_size, divisible by its num_nextn_predict_layers unless DSPARK_ENABLE_DSPARK_BLOCK_K=1)"
   echo "  issue191 tool-call fail-closed hotfix: ${DSPARK_ENABLE_ISSUE191_TOOLCALL_FAILCLOSED:-0} (0=stock / 1=preflight+apply; mode=${DSPARK_ISSUE191_TOOLCALL_MODE:-failclosed} retries=${DSPARK_ISSUE191_TOOLCALL_RETRIES:-2} thinkoff-fallback=${DSPARK_ISSUE191_TOOLCALL_THINKOFF_FALLBACK:-1})"
   echo "  async scheduling: ${DSPARK_ASYNC_SCHEDULING:-1} (1=--async-scheduling / 0=removed on both ranks)"
   echo "  dspark block-k unlock: ${DSPARK_ENABLE_DSPARK_BLOCK_K:-0} (0=stock k%n_predict rule / 1=k follows dspark_block_size)"
